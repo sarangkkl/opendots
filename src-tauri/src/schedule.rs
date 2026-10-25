@@ -10,6 +10,10 @@ pub fn resolve(local: NaiveDateTime, tz: Tz) -> Option<DateTime<Utc>> {
     }
 }
 pub fn validate(job: &mut Job) -> Result<()> {
+    if job.recurrence == "immediate" {
+        job.next_at = Some(now());
+        return Ok(());
+    }
     let tz: Tz = job
         .timezone
         .parse()
@@ -27,7 +31,7 @@ pub fn validate(job: &mut Job) -> Result<()> {
     Ok(())
 }
 pub fn advance(job: &Job, after: DateTime<Utc>) -> Result<Option<String>> {
-    if job.recurrence == "once" {
+    if matches!(job.recurrence.as_str(), "once" | "immediate") {
         return Ok(None);
     }
     let tz: Tz = job.timezone.parse().map_err(|_| "Invalid timezone")?;
@@ -53,6 +57,94 @@ pub fn advance(job: &Job, after: DateTime<Utc>) -> Result<Option<String>> {
     }
     Err("Cannot calculate next occurrence".into())
 }
+
+impl crate::runtime::Runtime {
+    pub async fn job_tool(
+        &self,
+        run: &Execution,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        use serde_json::json;
+        let action = args["action"].as_str().ok_or("Missing action")?;
+        if action == "list" {
+            return Ok(json!(
+                self.db
+                    .list::<Job>("job")?
+                    .into_iter()
+                    .filter(|j| j.agent_id == run.agent_id)
+                    .collect::<Vec<_>>()
+            ));
+        }
+        let key = format!(
+            "{}:job:{}",
+            run.id,
+            args["request_id"]
+                .as_str()
+                .ok_or("Missing stable request_id")?
+        );
+        if let Ok(previous) = self.db.get::<serde_json::Value>("job_proposal", &key) {
+            return Ok(previous);
+        }
+        let mut job: Job = if action == "create" {
+            let mut job: Job =
+                serde_json::from_value(args["job"].clone()).map_err(|e| e.to_string())?;
+            job.id = id();
+            job.agent_id = run.agent_id.clone();
+            job.group_id = run.group_id.clone();
+            job
+        } else {
+            self.db
+                .get("job", args["job_id"].as_str().ok_or("Missing job_id")?)?
+        };
+        if job.agent_id != run.agent_id {
+            return Err("Job belongs to another agent".into());
+        }
+        match action {
+            "create" => {}
+            "edit" => {
+                let proposed: Job =
+                    serde_json::from_value(args["job"].clone()).map_err(|e| e.to_string())?;
+                job.name = proposed.name;
+                job.prompt = proposed.prompt;
+                job.timezone = proposed.timezone;
+                job.local_time = proposed.local_time;
+                job.recurrence = proposed.recurrence;
+            }
+            "pause" => job.paused = true,
+            "delete" => {}
+            _ => return Err("Unsupported job action".into()),
+        }
+        if job.name.trim().is_empty() || job.prompt.trim().is_empty() {
+            return Err("Job needs a name and task".into());
+        }
+        if matches!(action, "create" | "edit") {
+            validate(&mut job)?;
+        }
+        let approval_id = self
+            .approve_record(
+                &run.id,
+                "schedule",
+                json!({"action":action,"job":job,"working_folder":self.work_path(&run.agent_id)?}),
+            )
+            .await?;
+        let _guard = self.mutations.lock().unwrap();
+        if self.cancelled(&run.id) {
+            return Err("Execution cancelled".into());
+        }
+        if let Ok(previous) = self.db.get::<serde_json::Value>("job_proposal", &key) {
+            return Ok(previous);
+        }
+        if job.recurrence == "immediate" {
+            job.next_at = Some(now());
+        }
+        let result = json!({"job_id":job.id,"action":action,"status":"approved"});
+        self.db
+            .apply_job(&job, action == "delete", &key, &result, &approval_id)?;
+        self.notify();
+        Ok(result)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

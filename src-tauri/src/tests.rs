@@ -12,9 +12,12 @@ use tokio::time::{Duration, sleep};
 pub fn runtime() -> Arc<Runtime> {
     let root = std::env::temp_dir().join(format!("opendots-test-{}", id()));
     std::fs::create_dir_all(&root).unwrap();
+    let db = Store::open(&root.join("test.sqlite")).unwrap();
+    db.put("settings", "working_root", &root.to_string_lossy())
+        .unwrap();
     Arc::new(Runtime {
         browsers: Default::default(),
-        db: Store::open(&root.join("test.sqlite")).unwrap(),
+        db,
         app: None,
         root,
         controls: Mutex::new(HashMap::new()),
@@ -36,6 +39,7 @@ fn run(rt: &Runtime, a: &Agent, g: Option<String>) -> Execution {
     let r = rt
         .enqueue(
             SendInput {
+                thread_id: None,
                 agent_id: a.id.clone(),
                 group_id: g,
                 prompt: "Task".into(),
@@ -390,7 +394,15 @@ async fn live_provider_smoke() {
         crate::providers::execute(rt.clone(), &r, &token),
     )
     .await;
-    let saved = rt.db.session(&a.id, &r.conversation_id, &a.provider);
+    let saved = rt.db.session(
+        &a.id,
+        &format!(
+            "{}:thread:{}:managed-v2",
+            r.conversation_id,
+            r.thread_id.as_deref().unwrap_or("main")
+        ),
+        &a.provider,
+    );
     let mut followup = r.clone();
     followup.prompt = "Reply exactly OPENDOTS_RESUMED. Do not use tools.".into();
     let resumed = tokio::time::timeout(
@@ -400,7 +412,18 @@ async fn live_provider_smoke() {
     .await;
     rt.stopping.store(true, Ordering::SeqCst);
     server.await.unwrap().unwrap();
-    assert_eq!(saved, rt.db.session(&a.id, &r.conversation_id, &a.provider));
+    assert_eq!(
+        saved,
+        rt.db.session(
+            &a.id,
+            &format!(
+                "{}:thread:{}:managed-v2",
+                r.conversation_id,
+                r.thread_id.as_deref().unwrap_or("main")
+            ),
+            &a.provider
+        )
+    );
     assert!(
         resumed
             .expect("resume timed out")
@@ -420,7 +443,15 @@ async fn live_provider_smoke() {
     assert!(text.contains("OPENDOTS_OK"), "{text}");
     assert!(
         rt.db
-            .session(&a.id, &r.conversation_id, &a.provider)
+            .session(
+                &a.id,
+                &format!(
+                    "{}:thread:{}:managed-v2",
+                    r.conversation_id,
+                    r.thread_id.as_deref().unwrap_or("main")
+                ),
+                &a.provider
+            )
             .is_some()
     );
     assert!(
@@ -451,6 +482,7 @@ async fn queue_limits_and_cancellation_release_owned_processes() {
         for _ in 0..2 {
             rt.enqueue(
                 SendInput {
+                    thread_id: None,
                     agent_id: a.id.clone(),
                     group_id: None,
                     prompt: "Wait".into(),
@@ -582,5 +614,191 @@ sleep 30
         .await
         .expect("Cancellation did not interrupt the MCP request")
         .unwrap();
-    assert!(result.unwrap_err().contains("cancelled"));
+    assert!(result.unwrap_err().contains("confinement"));
+}
+
+#[test]
+fn structured_mentions_threads_and_exact_dispatch() {
+    use crate::chat::ChatInput;
+    let rt = runtime();
+    let a = agent(&rt, "Researcher");
+    let b = agent(&rt, "Creator");
+    let g = Group {
+        members: vec![a.id.clone(), b.id.clone()],
+        ..Default::default()
+    };
+    rt.db.put("group", &g.id, &g).unwrap();
+    let conversation = format!("group:{}", g.id);
+    let input = |request: String, mentions: Vec<String>, reply_to: Option<String>| ChatInput {
+        conversation_id: conversation.clone(),
+        content: "@Creator is ordinary text here".into(),
+        request_id: request,
+        mentions,
+        reply_to,
+    };
+    let info = rt.post_chat(input(id(), vec![], None)).unwrap();
+    assert!(info.executions.is_empty());
+    let key = id();
+    let dispatched = rt
+        .post_chat(input(
+            key.clone(),
+            vec![a.id.clone(), b.id.clone(), a.id.clone()],
+            None,
+        ))
+        .unwrap();
+    assert_eq!(dispatched.executions.len(), 2);
+    assert_eq!(
+        rt.post_chat(input(key, vec![a.id.clone()], None))
+            .unwrap()
+            .message
+            .id,
+        dispatched.message.id
+    );
+    let reply = Message {
+        reply_count: 0,
+        position: 0,
+        id: id(),
+        conversation_id: conversation.clone(),
+        thread_id: Some(dispatched.message.id.clone()),
+        reply_to: Some(dispatched.message.id.clone()),
+        mentions: vec![],
+        attachments: vec![],
+        agent_id: Some(a.id.clone()),
+        execution_id: Some(dispatched.executions[0].id.clone()),
+        role: "assistant".into(),
+        content: "Question?".into(),
+        created_at: now(),
+    };
+    rt.db.message(&reply).unwrap();
+    let continuation = rt.post_chat(input(id(), vec![], Some(reply.id))).unwrap();
+    assert_eq!(continuation.executions.len(), 1);
+    assert_eq!(continuation.executions[0].agent_id, a.id);
+    assert_eq!(
+        continuation.executions[0].thread_id,
+        Some(dispatched.message.id.clone())
+    );
+    assert_eq!(
+        rt.db
+            .history(&conversation, None, Some(&dispatched.message.id))
+            .unwrap()
+            .len(),
+        3
+    );
+}
+#[tokio::test]
+async fn human_request_persists_and_reply_continues_thread() {
+    let rt = runtime();
+    let a = agent(&rt, "Researcher");
+    let r = run(&rt, &a, None);
+    let result=rt.tool(&r.id,"post_message",json!({"request_id":"question","message":"Which topic?","mentions":["you"],"request_answer":true})).await.unwrap();
+    assert_eq!(rt.db.run(&r.id).unwrap().status, "waiting_user");
+    rt.db.recover().unwrap();
+    assert_eq!(rt.db.run(&r.id).unwrap().status, "waiting_user");
+    let answer = rt
+        .post_chat(crate::chat::ChatInput {
+            conversation_id: r.conversation_id,
+            content: "Travel".into(),
+            request_id: id(),
+            mentions: vec![],
+            reply_to: Some(result["message_id"].as_str().unwrap().into()),
+        })
+        .unwrap();
+    assert_eq!(answer.executions.len(), 1);
+    assert_eq!(
+        rt.db.list::<Value>("notification").unwrap()[0]["status"],
+        "answered"
+    );
+}
+#[tokio::test]
+async fn proposed_schedule_cannot_activate_after_rejection() {
+    let rt = runtime();
+    let a = agent(&rt, "Scheduler");
+    let r = run(&rt, &a, None);
+    let args = json!({"action":"create","request_id":"daily","job":{"name":"Research","prompt":"Find ideas","timezone":"Asia/Kolkata","local_time":"2027-01-01T09:00","recurrence":"daily"}});
+    let task = {
+        let rt = rt.clone();
+        let rid = r.id.clone();
+        let args = args.clone();
+        tokio::spawn(async move { rt.tool(&rid, "jobs", args).await })
+    };
+    let pending = wait_pending(&rt).await;
+    assert!(rt.db.list::<Job>("job").unwrap().is_empty());
+    rt.decide(&pending.id, false).unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert!(rt.db.list::<Job>("job").unwrap().is_empty());
+    let task = {
+        let rt = rt.clone();
+        let rid = r.id.clone();
+        tokio::spawn(async move { rt.tool(&rid, "jobs", args).await })
+    };
+    let pending = wait_pending(&rt).await;
+    rt.decide(&pending.id, true).unwrap();
+    assert!(task.await.unwrap().is_ok());
+    assert_eq!(rt.db.list::<Job>("job").unwrap().len(), 1);
+}
+#[test]
+fn private_files_reject_traversal_links_and_preserve_other_agents() {
+    let rt = runtime();
+    let a = agent(&rt, "A");
+    let b = agent(&rt, "B");
+    rt.write_work(&b.id, "secret.txt", b"private").unwrap();
+    rt.write_work(&a.id, "nested/file.txt", b"safe").unwrap();
+    assert_eq!(rt.read_work(&a.id, "nested/file.txt").unwrap(), b"safe");
+    assert!(
+        rt.read_work(&a.id, &format!("../{}/secret.txt", b.id))
+            .is_err()
+    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            rt.work_path(&b.id).unwrap(),
+            rt.work_path(&a.id).unwrap().join("escape"),
+        )
+        .unwrap();
+        assert!(rt.read_work(&a.id, "escape/secret.txt").is_err());
+        assert!(rt.write_work(&a.id, "escape/secret.txt", b"bad").is_err());
+        std::fs::hard_link(
+            rt.work_path(&b.id).unwrap().join("secret.txt"),
+            rt.work_path(&a.id).unwrap().join("linked.txt"),
+        )
+        .unwrap();
+        assert!(rt.read_work(&a.id, "linked.txt").is_err());
+        rt.write_work(&a.id, "linked.txt", b"replacement").unwrap();
+        assert_eq!(rt.read_work(&b.id, "secret.txt").unwrap(), b"private");
+    }
+}
+
+#[tokio::test]
+#[ignore = "Uses installed authenticated provider to verify managed files and human request"]
+async fn live_managed_files_and_question() {
+    let rt = runtime();
+    let mut a = agent(&rt, "Managed tool verifier");
+    a.provider = std::env::var("OPENDOTS_TEST_PROVIDER").unwrap();
+    a.policies.insert("files:write".into(), "allow".into());
+    rt.db.put("agent", &a.id, &a).unwrap();
+    let mut r = run(&rt, &a, None);
+    r.prompt="Use only OpenDots tools. Call files to write proof.txt containing exactly OPENDOTS_PRIVATE_OK. Read proof.txt back with files. Then call post_message with message Did the private file test work?, request_id private-proof, mentions [you], and request_answer true. Do not call any other tools.".into();
+    let token = id();
+    rt.tokens
+        .lock()
+        .unwrap()
+        .insert(token.clone(), r.id.clone());
+    let server = tokio::spawn(mcp::serve(rt.clone()));
+    while rt.endpoint.lock().unwrap().is_empty() {
+        sleep(Duration::from_millis(10)).await;
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(120),
+        crate::providers::execute(rt.clone(), &r, &token),
+    )
+    .await;
+    rt.stopping.store(true, Ordering::SeqCst);
+    server.await.unwrap().unwrap();
+    assert!(result.is_ok(), "provider timed out");
+    assert_eq!(
+        rt.read_work(&a.id, "proof.txt").unwrap(),
+        b"OPENDOTS_PRIVATE_OK"
+    );
+    assert_eq!(rt.db.run(&r.id).unwrap().status, "waiting_user");
+    assert_eq!(rt.db.list::<Value>("notification").unwrap().len(), 1);
 }

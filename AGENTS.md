@@ -31,7 +31,7 @@ The core experience is:
 - **Job:** A task assigned to an agent, with execution status and a recorded result.
 - **Schedule:** A one-time or recurring trigger for a job, with an explicit timezone and controls to pause or cancel it.
 
-The desktop platform uses SQLite in the application-data directory, Rust-owned provider processes and an in-process MCP bridge. Credentials belong in the OS credential store. Memory proposals require user approval. Provider-native plugins are not automatically portable between providers.
+The desktop platform uses embedded PoloDB 5.3.0 in the application-data directory, Rust-owned provider processes and an in-process MCP bridge. Credentials belong in the OS credential store. Memory proposals require user approval. Provider-native plugins are not automatically portable between providers.
 
 Schedules run while OpenDots is in the tray. Explicit Quit stops execution. Missed schedules are recorded, not replayed. No cloud/background daemon is included.
 
@@ -85,3 +85,14 @@ Postman CLI is installed on this device, and can be used for API Engineering wor
 
 - Appearance supports persisted Light/Dark/System preferences. Use shared CSS color tokens for all surfaces and synchronize the native window theme.
 - Agents automatically launch/relaunch stopped or exited configured browser profiles. Preserve saved login data and live manual ownership; invalidate old snapshots/approvals and never replay actions as part of recovery.
+
+## Threads, managed files, and document storage
+
+- Chat uses explicit participant IDs for mentions and persistent reply/thread IDs. Generated prose never dispatches work. Unaddressed group posts are informational; replies address their author unless explicit mentions override them.
+- Sessions are scoped by agent, conversation, thread and managed-tool version. Private chat and memory never enter other threads implicitly.
+- `post_message` can notify You or request an answer. Waiting requests release provider capacity; a reply creates a linked continuation. Notifications are not approvals.
+- Agents propose jobs through `jobs`; creation, editing, pausing and deletion require approval. Activation and deduplication are transactional. Scheduled occurrences and dispatch commit together.
+- Settings selects the working root. Managed file IO uses private `agents/<id>` folders, no-follow directory handles, relative paths, hard-link read checks and new-inode replacement. Sharing creates recipient-owned copies. No arbitrary local stdio integration may bypass this boundary.
+- Browser output, downloads and imported files belong under private folders. Browser profiles, document storage, credentials and provider settings are application runtime data. Do not claim a universal OS sandbox around external CLIs or remote MCP services.
+- Legacy SQLite is retained only for importing a consistent snapshot into a staging document store. Verify before activation, preserve original data and backups, and retain explicit document compatibility upgrades. Document storage does not eliminate data evolution.
+- PoloDB 5.3.0 indexed multi-condition/sort pipelines have a regression reproduced by our tests. History uses indexed equality cursors with bounded in-process page selection; do not reintroduce those pipelines without regression proof.

@@ -220,11 +220,11 @@ impl Runtime {
             }
             if !s.manual && (s.owner.is_empty() || s.owner == run.id) {
                 s.owner = run.id.clone();
-                let download_dir = self.browser_dir(&run.id).join("downloads");
+                let download_dir = self.browser_dir(&run.id)?.join("downloads");
                 std::fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
                 s.cdp.call("","Browser.setDownloadBehavior",json!({"behavior":"allowAndName","downloadPath":download_dir,"eventsEnabled":true})).await?;
                 if s.capture.is_none() {
-                    match Capture::start(s.cdp.clone(), s.tab.clone(), self.browser_dir(&run.id))
+                    match Capture::start(s.cdp.clone(), s.tab.clone(), self.browser_dir(&run.id)?)
                         .await
                     {
                         Ok(c) => s.capture = Some(c),
@@ -249,13 +249,13 @@ impl Runtime {
         if let Some(rest) = reference.strip_prefix("browser:") {
             let (run, name) = rest.split_once('/').ok_or("Invalid artifact reference")?;
             let source = self.db.run(run)?;
-            if source.agent_id != agent
-                && self
+            if source.agent_id != agent {
+                let relative: String = self
                     .db
-                    .get::<bool>("browser_share", &format!("{agent}:{reference}"))
-                    != Ok(true)
-            {
-                return Err("Artifact was not explicitly shared with this agent".into());
+                    .get("browser_share_copy", &format!("{agent}:{reference}"))
+                    .map_err(|_| "Artifact was not copied to this agent")?;
+                self.read_work(agent, &relative)?;
+                return Ok(self.work_path(agent)?.join(relative));
             }
             let file = commands::artifact(self, run, name)?;
             if matches!(
@@ -271,6 +271,17 @@ impl Runtime {
                 return Err("Upload was not assigned to this agent".into());
             }
             let path = PathBuf::from(text(&record, "path")?);
+            let root = self
+                .work_path(agent)?
+                .canonicalize()
+                .map_err(|e| e.to_string())?;
+            if !path
+                .canonicalize()
+                .map_err(|e| e.to_string())?
+                .starts_with(root)
+            {
+                return Err("Import this file into the private working folder first".into());
+            }
             if !path.is_file() {
                 return Err("Upload no longer exists".into());
             }
@@ -287,7 +298,7 @@ impl Runtime {
             .collect();
         for run in self.db.runs()?.into_iter().take(200) {
             for sub in ["", "downloads"] {
-                if let Ok(entries) = std::fs::read_dir(self.browser_dir(&run.id).join(sub)) {
+                if let Ok(entries) = std::fs::read_dir(self.browser_dir(&run.id)?.join(sub)) {
                     for entry in entries.flatten() {
                         if !entry.path().is_file() {
                             continue;
@@ -310,8 +321,12 @@ impl Runtime {
         }
         Ok(json!(items))
     }
-    pub fn browser_dir(&self, run: &str) -> PathBuf {
-        self.root.join("browser-artifacts").join(run)
+    pub fn browser_dir(&self, run: &str) -> Result<PathBuf> {
+        let execution = self.db.run(run)?;
+        Ok(self
+            .work_path(&execution.agent_id)?
+            .join("artifacts")
+            .join(run))
     }
     pub async fn browser_release(&self, run: &str) {
         let sessions: Vec<_> = self
@@ -481,7 +496,7 @@ impl Runtime {
                 .write_to(&mut bytes, image::ImageFormat::Png)
                 .map_err(|e| e.to_string())?;
             let name = format!("screenshot-{}.png", id());
-            let dir = self.browser_dir(run);
+            let dir = self.browser_dir(run)?;
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             std::fs::write(dir.join(&name), bytes.get_ref()).map_err(|e| e.to_string())?;
             output.content.push(Content::Image {
@@ -681,7 +696,7 @@ impl Runtime {
                 let dest = text(a, "url")?;
                 url(dest)?;
                 if action == "download" {
-                    let dir = self.browser_dir(run).join("downloads");
+                    let dir = self.browser_dir(run)?.join("downloads");
                     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
                     s.cdp.call("","Browser.setDownloadBehavior",json!({"behavior":"allowAndName","downloadPath":dir,"eventsEnabled":true})).await?;
                 }
@@ -841,7 +856,8 @@ impl Runtime {
                         .call("", "Target.activateTarget", json!({"targetId":s.target}))
                         .await?;
                     s.capture = Some(
-                        Capture::start(s.cdp.clone(), s.tab.clone(), self.browser_dir(run)).await?,
+                        Capture::start(s.cdp.clone(), s.tab.clone(), self.browser_dir(run)?)
+                            .await?,
                     );
                 }
             }

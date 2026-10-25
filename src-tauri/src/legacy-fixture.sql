@@ -1,0 +1,12 @@
+PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+ CREATE TABLE IF NOT EXISTS migrations(version INTEGER PRIMARY KEY);
+ CREATE TABLE IF NOT EXISTS entities(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id));
+ CREATE TABLE IF NOT EXISTS executions(id TEXT PRIMARY KEY,agent_id TEXT NOT NULL,conversation_id TEXT NOT NULL,group_id TEXT,job_id TEXT,chain_id TEXT NOT NULL,depth INTEGER NOT NULL,prompt TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,error TEXT);
+ CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,execution_id TEXT NOT NULL,kind TEXT NOT NULL,data TEXT NOT NULL,created_at TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL,agent_id TEXT,execution_id TEXT,role TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS sessions(agent_id TEXT NOT NULL,conversation_id TEXT NOT NULL,provider TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(agent_id,conversation_id,provider));
+ CREATE TABLE IF NOT EXISTS handoffs(execution_id TEXT NOT NULL,request_id TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(execution_id,request_id));
+ CREATE INDEX IF NOT EXISTS events_run ON events(execution_id,seq);
+ CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation_id,created_at);
+ CREATE INDEX IF NOT EXISTS executions_status ON executions(status,created_at);
+ INSERT OR IGNORE INTO migrations VALUES(1);

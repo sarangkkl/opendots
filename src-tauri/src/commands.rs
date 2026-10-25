@@ -6,7 +6,7 @@ use tauri::State;
 #[tauri::command]
 pub fn snapshot(rt: State<'_, Arc<Runtime>>) -> Result<Value> {
     Ok(
-        json!({"agents":rt.db.list::<Agent>("agent")?,"groups":rt.db.list::<Group>("group")?,"integrations":rt.db.list::<Integration>("integration")?,"memories":rt.db.list::<Memory>("memory")?,"jobs":rt.db.list::<Job>("job")?,"executions":rt.db.runs()?,"approvals":rt.db.list::<Approval>("approval")?,"occurrences":rt.db.list::<Value>("occurrence")?}),
+        json!({"notifications":rt.db.list::<Value>("notification")?,"agents":rt.db.list::<Agent>("agent")?,"groups":rt.db.list::<Group>("group")?,"integrations":rt.db.list::<Integration>("integration")?,"memories":rt.db.list::<Memory>("memory")?,"jobs":rt.db.list::<Job>("job")?,"executions":rt.db.runs()?,"approvals":rt.db.list::<Approval>("approval")?,"occurrences":rt.db.list::<Value>("occurrence")?}),
     )
 }
 fn valid_id(value: &str) -> Result<()> {
@@ -212,8 +212,12 @@ pub fn messages(rt: State<'_, Arc<Runtime>>, conversation_id: String) -> Result<
     rt.db.messages(&conversation_id)
 }
 #[tauri::command]
-pub fn execution_events(rt: State<'_, Arc<Runtime>>, execution_id: String) -> Result<Vec<Event>> {
-    rt.db.events(&execution_id)
+pub fn execution_events(
+    rt: State<'_, Arc<Runtime>>,
+    execution_id: String,
+    before: Option<i64>,
+) -> Result<Vec<Event>> {
+    rt.db.event_page(&execution_id, before)
 }
 #[tauri::command]
 pub fn send_message(rt: State<'_, Arc<Runtime>>, input: SendInput) -> Result<Execution> {
@@ -233,6 +237,7 @@ pub fn retry_execution(rt: State<'_, Arc<Runtime>>, execution_id: String) -> Res
     let _guard = rt.mutations.lock().unwrap();
     rt.enqueue(
         SendInput {
+            thread_id: None,
             agent_id: r.agent_id,
             group_id: r.group_id,
             prompt: r.prompt,
@@ -263,6 +268,7 @@ pub fn run_job(rt: State<'_, Arc<Runtime>>, job_id: String) -> Result<Execution>
     }
     rt.enqueue(
         SendInput {
+            thread_id: None,
             agent_id: j.agent_id,
             group_id: j.group_id,
             prompt: j.prompt,

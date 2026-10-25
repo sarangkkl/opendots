@@ -53,7 +53,13 @@ test.beforeEach(async ({ page }) => {
           if (cmd === "browser_artifacts") return [];
           if (cmd === "browser_status") return {};
           if (cmd === "snapshot") return structuredClone(store);
-          if (cmd === "messages")
+          if (cmd === "working_folder") return store.working_root || null;
+          if (cmd === "set_working_folder") {
+            store.working_root = args.path;
+            persist();
+            return null;
+          }
+          if (cmd === "messages" || cmd === "history")
             return store.messages.filter(
               (m: any) => m.conversation_id === args.conversationId,
             );
@@ -81,6 +87,48 @@ test.beforeEach(async ({ page }) => {
             else list[i] = args.value;
             persist();
             return null;
+          }
+          if (cmd === "post_chat") {
+            const input = args.input;
+            const parent = store.messages.find(
+              (m: any) => m.id === input.reply_to,
+            );
+            const recipients = input.mentions.filter(
+              (id: string) => id !== "you",
+            );
+            if (!input.mentions.length) {
+              if (input.conversation_id.startsWith("agent:"))
+                recipients.push(input.conversation_id.slice(6));
+              else if (parent?.agent_id) recipients.push(parent.agent_id);
+            }
+            const message = {
+              id: crypto.randomUUID(),
+              conversation_id: input.conversation_id,
+              content: input.content,
+              role: "user",
+              agent_id: null,
+              execution_id: null as string | null,
+              created_at: new Date().toISOString(),
+              position: store.messages.length + 1,
+              thread_id: parent?.thread_id || parent?.id || null,
+              reply_to: input.reply_to,
+              mentions: input.mentions,
+            };
+            const executions = recipients.map((agent_id: string) => ({
+              id: crypto.randomUUID(),
+              agent_id,
+              conversation_id: input.conversation_id,
+              thread_id: message.thread_id || message.id,
+              status: "queued",
+              prompt: input.content,
+              created_at: message.created_at,
+              updated_at: message.created_at,
+            }));
+            message.execution_id = executions[0]?.id || null;
+            store.messages.push(message);
+            store.executions.push(...executions);
+            persist();
+            return { message, executions };
           }
           if (cmd === "send_message") {
             const id = crypto.randomUUID();
@@ -159,6 +207,7 @@ test("create agent, review memory, persist configuration, send and cancel execut
     .getByRole("textbox", { name: "Message", exact: true })
     .fill("Suggest a topic for today");
   await page.getByRole("button", { name: "Send ↗" }).click();
+  await page.getByRole("button", { name: "View execution ↗" }).click();
   await expect(
     page.getByRole("button", { name: "Cancel execution" }),
   ).toBeVisible();
@@ -398,5 +447,120 @@ test("appearance supports light, dark, system and survives reload", async ({
     path: "test-results/settings-light.png",
     fullPage: true,
     animations: "disabled",
+  });
+});
+
+test("channel mentions dispatch explicitly, Markdown is safe, and replies open a thread", async ({
+  page,
+}) => {
+  await page.evaluate(() => {
+    const at = new Date().toISOString();
+    localStorage.setItem(
+      "fixture",
+      JSON.stringify({
+        agents: [
+          {
+            id: "researcher",
+            name: "Researcher",
+            role: "Research",
+            provider: "claude",
+            skills: [],
+            integrations: [],
+            policies: {},
+          },
+        ],
+        groups: [
+          {
+            id: "team",
+            name: "Editorial",
+            purpose: "Create together",
+            members: ["researcher"],
+            automatic: true,
+            paused: false,
+          },
+        ],
+        integrations: [],
+        memories: [],
+        jobs: [],
+        executions: [],
+        approvals: [],
+        occurrences: [],
+        messages: [
+          {
+            id: "question",
+            conversation_id: "group:team",
+            agent_id: "researcher",
+            role: "assistant",
+            content:
+              "**Choose a topic**\n\n- Travel\n- Food\n\n![remote](https://example.invalid/private.png)\n<script>bad()</script>",
+            created_at: at,
+            position: 1,
+          },
+        ],
+      }),
+    );
+  });
+  await page.reload();
+  await page
+    .locator(".team-card")
+    .filter({
+      has: page.getByRole("heading", { name: "Editorial", exact: true }),
+    })
+    .click();
+  await expect(page.locator(".markdown strong")).toHaveText("Choose a topic");
+  await expect(page.locator(".markdown img")).toHaveCount(0);
+  await expect(page.locator(".markdown script")).toHaveCount(0);
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Hello @Researcher");
+  await page.getByRole("button", { name: "Send ↗" }).click();
+  expect(
+    await page.evaluate(
+      () => JSON.parse(localStorage.getItem("fixture")!).executions.length,
+    ),
+  ).toBe(0);
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("@Res");
+  await page
+    .getByRole("listbox", { name: "Mention a member" })
+    .getByRole("option", { name: "@Researcher" })
+    .click();
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Please research travel");
+  await page.getByRole("button", { name: "Send ↗" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => JSON.parse(localStorage.getItem("fixture")!).executions.length,
+      ),
+    )
+    .toBe(1);
+  await page
+    .getByRole("button", { name: "Reply", exact: true })
+    .first()
+    .click();
+  await expect(page.locator(".thread-panel")).toBeVisible();
+  await page
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Travel please");
+  await page.getByRole("button", { name: "Send ↗" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => JSON.parse(localStorage.getItem("fixture")!).executions.length,
+      ),
+    )
+    .toBe(2);
+  expect(
+    await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("fixture")!).messages.at(-1).reply_to,
+    ),
+  ).toBe("question");
+  await page.screenshot({
+    path: "test-results/threaded-chat.png",
+    fullPage: true,
   });
 });

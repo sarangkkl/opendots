@@ -40,3 +40,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked browser_fixture -- --ig
 ```
 
 Set `OPENDOTS_TEST_CHROME` to an absolute executable path if necessary. Fixtures use temporary headless profiles and localhost pages, never your social-media accounts.
+
+## Private workspace storage
+
+Choose the working root in Settings before agents use browser tools. New captures and downloads live in `agents/<agent-id>/artifacts/<execution-id>/`; imported upload copies live in `agents/<agent-id>/inputs/`. Legacy media is copied and verified before references switch, and originals are retained. Sharing a browser artifact requires approval and creates a recipient-owned copy rather than access to the source agent’s folder. Profile/login data remains separate under application data and is never exposed as a managed file.

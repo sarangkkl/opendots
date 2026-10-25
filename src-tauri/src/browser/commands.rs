@@ -64,7 +64,7 @@ pub async fn browser_status(rt: State<'_, Arc<Runtime>>, execution_id: String) -
 #[tauri::command]
 pub fn browser_artifacts(rt: State<'_, Arc<Runtime>>, execution_id: String) -> Result<Value> {
     rt.db.run(&execution_id)?;
-    let dir = rt.browser_dir(&execution_id);
+    let dir = rt.browser_dir(&execution_id)?;
     let mut files = vec![];
     for sub in ["", "downloads"] {
         let root = dir.join(sub);
@@ -83,7 +83,7 @@ pub fn browser_artifacts(rt: State<'_, Arc<Runtime>>, execution_id: String) -> R
 pub(super) fn artifact(rt: &Runtime, execution: &str, name: &str) -> Result<PathBuf> {
     rt.db.run(execution)?;
     let root = rt
-        .browser_dir(execution)
+        .browser_dir(execution)?
         .canonicalize()
         .map_err(|e| e.to_string())?;
     let file = root.join(name).canonicalize().map_err(|e| e.to_string())?;
@@ -153,10 +153,15 @@ pub fn add_browser_upload(
     }
     // Copy the explicitly selected file so later replacement of its path cannot change an approved upload.
     let key = id();
-    let dir = rt.root.join("browser-uploads").join(&key);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let dest = dir.join(source.file_name().ok_or("File has no name")?);
-    std::fs::copy(source, &dest).map_err(|e| e.to_string())?;
+    let relative = format!(
+        "inputs/{key}/{}",
+        source
+            .file_name()
+            .ok_or("File has no name")?
+            .to_string_lossy()
+    );
+    rt.import_work_file(&agent_id, &relative, &source)?;
+    let dest = rt.work_path(&agent_id)?.join(relative);
     rt.db.put("browser_upload",&key,&json!({"id":key,"agent_id":agent_id,"path":dest,"name":dest.file_name().unwrap().to_string_lossy()}))?;
     rt.notify();
     Ok(key)
@@ -170,6 +175,7 @@ pub fn replay_browser(rt: State<'_, Arc<Runtime>>, execution_id: String) -> Resu
     let _guard = rt.mutations.lock().unwrap();
     let run = rt.enqueue(
         SendInput {
+            thread_id: None,
             agent_id: source.agent_id,
             group_id: source.group_id,
             job_id: None,

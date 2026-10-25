@@ -281,6 +281,9 @@ pub fn builtin_tools() -> Vec<Value> {
             json!(["integration_id", "tool", "arguments"]),
         ),
     ];
+    tools.push(tool("files", "Managed private-folder files. Use relative paths only. Share copies to a group member after approval.", json!({"action":{"type":"string","enum":["list","read","write","mkdir","move","delete","share"]},"path":{"type":"string"},"content":{"type":"string"},"destination":{"type":"string"},"recipient":{"type":"string"}}), json!(["action"])));
+    tools.push(tool("post_message", "Post in the current thread. Structured member IDs dispatch handoffs; mention you to notify the user. request_answer pauses execution and releases capacity until the user replies.", json!({"message":{"type":"string"},"request_id":{"type":"string"},"mentions":{"type":"array","items":{"type":"string"}},"request_answer":{"type":"boolean"},"artifacts":{"type":"array","items":{"type":"string"}}}),json!(["message","request_id"])));
+    tools.push(tool("jobs", "List own jobs or propose create/edit/pause/delete. Changes require user approval before activation. Job requires name, prompt, timezone, local_time (YYYY-MM-DDTHH:MM), recurrence (once/daily/weekly).",json!({"action":{"type":"string","enum":["list","create","edit","pause","delete"]},"request_id":{"type":"string"},"job_id":{"type":"string"},"job":{"type":"object"}}),json!(["action"])));
     tools.extend(crate::browser::tools());
     tools
 }
@@ -321,6 +324,9 @@ impl Runtime {
         let agent: Agent = self.db.get("agent", &run.agent_id)?;
 
         match name {
+            "post_message" => self.post_agent_message(&run, args).await,
+            "jobs" => self.job_tool(&run, args).await,
+            "files" => self.file_tool(&run, args).await,
             "propose_memory" => {
                 let content = required(&args, "content")?;
 
@@ -402,6 +408,17 @@ impl Runtime {
                     .await?;
                 }
 
+                if args["artifacts"].as_array().is_some_and(|a| {
+                    a.iter()
+                        .any(|v| v.as_str().is_some_and(|s| s.starts_with("browser:")))
+                }) {
+                    self.approve(
+                        run_id,
+                        "file_share",
+                        json!({"recipient":recipient,"artifacts":args["artifacts"]}),
+                    )
+                    .await?;
+                }
                 let _guard = self.mutations.lock().unwrap();
 
                 if self.cancelled(run_id) {
@@ -410,6 +427,9 @@ impl Runtime {
 
                 let current: Group = self.db.get("group", group_id)?;
 
+                if current.automatic != group.automatic {
+                    return Err("Group approval controls changed; request the handoff again".into());
+                }
                 if current.paused || !current.members.contains(&recipient.to_string()) {
                     return Err("Group changed or paused before handoff".into());
                 }
@@ -436,6 +456,7 @@ impl Runtime {
                 }
 
                 let child = Execution {
+                    thread_id: run.thread_id.clone(),
                     id: id(),
                     agent_id: recipient.into(),
                     conversation_id: run.conversation_id.clone(),
@@ -457,6 +478,20 @@ impl Runtime {
                 let target: Agent = self.db.get("agent", recipient)?;
 
                 let msg = Message {
+                    reply_count: 0,
+                    position: 0,
+                    thread_id: run.thread_id.clone(),
+                    reply_to: None,
+                    mentions: vec![recipient.to_string()],
+                    attachments: args["artifacts"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     id: id(),
                     conversation_id: run.conversation_id.clone(),
                     agent_id: Some(agent.id.clone()),
@@ -476,12 +511,25 @@ impl Runtime {
                 for reference in &shared {
                     self.browser_file(&agent.id, reference)?;
                 }
-                self.db.insert_handoff(&child, &msg, &key, &result)?;
                 for reference in shared {
-                    self.db
-                        .put("browser_share", &format!("{recipient}:{reference}"), &true)?;
+                    let source = self.browser_file(&agent.id, reference)?;
+                    let target = format!(
+                        "shared/{}/{}",
+                        id(),
+                        source
+                            .file_name()
+                            .ok_or("Invalid artifact")?
+                            .to_string_lossy()
+                    );
+                    self.import_work_file(recipient, &target, &source)?;
+                    self.db.put(
+                        "browser_share_copy",
+                        &format!("{recipient}:{reference}"),
+                        &target,
+                    )?;
                 }
 
+                self.db.insert_handoff(&child, &msg, &key, &result)?;
                 self.event(run_id, "handoff", result.clone());
 
                 Ok(result)
@@ -510,6 +558,11 @@ impl Runtime {
                 }
 
                 let integration: Integration = self.db.get("integration", integration_id)?;
+                if !integration.command.is_empty() {
+                    return Err(
+                        "Local stdio integrations cannot enforce managed file confinement".into(),
+                    );
+                }
 
                 if name == "call_tool" {
                     let tool = required(&args, "tool")?;

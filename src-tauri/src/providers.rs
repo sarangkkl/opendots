@@ -107,6 +107,7 @@ async fn next(rt: &Runtime, run: &str, p: &mut Process) -> Result<Option<Value>>
 
 pub async fn execute(rt: Arc<Runtime>, run: &Execution, token: &str) -> Result<String> {
     let a: Agent = rt.db.get("agent", &run.agent_id)?;
+    rt.work_path(&a.id)?;
 
     let exe = executable(&a.provider, &a.executable)?;
 
@@ -117,12 +118,7 @@ pub async fn execute(rt: Arc<Runtime>, run: &Execution, token: &str) -> Result<S
 
     let mut prompt = rt.context(run, &a)?;
 
-    if !a.workspace.is_empty() {
-        prompt.push_str(&format!(
-            "\nUser workspace reference: {}. Access it only through assigned tools.",
-            a.workspace
-        ));
-    }
+    prompt.push_str("\nUse the files tool for all file operations inside your private working folder. You cannot access other agents’ files. Use post_message with mentions [\"you\"] and request_answer true to wait for the user.\n");
 
     let url = format!("{}/mcp/{token}", rt.endpoint.lock().unwrap());
 
@@ -137,7 +133,7 @@ pub async fn execute(rt: Arc<Runtime>, run: &Execution, token: &str) -> Result<S
 
     tokio::select! {
     result=work=>result,_=async{
-    while !rt.cancelled(&run.id){
+    while !rt.cancelled(&run.id) && !rt.db.run(&run.id).is_ok_and(|r|matches!(r.status.as_str(),"waiting_user"|"continued")){
     sleep(Duration::from_millis(100)).await}
     }
     =>Err("Execution cancelled".into())}
@@ -189,7 +185,15 @@ async fn claude(
         args.extend(["--model".into(), a.model.clone()]);
     }
 
-    if let Some(s) = rt.db.session(&a.id, &run.conversation_id, "claude") {
+    if let Some(s) = rt.db.session(
+        &a.id,
+        &format!(
+            "{}:thread:{}:managed-v2",
+            run.conversation_id,
+            run.thread_id.as_deref().unwrap_or("main")
+        ),
+        "claude",
+    ) {
         args.extend(["--resume".into(), s]);
     }
 
@@ -213,8 +217,16 @@ async fn claude(
 
         while let Some(v) = next(&rt, &run.id, &mut p).await? {
             if let Some(s) = v["session_id"].as_str() {
-                rt.db
-                    .set_session(&a.id, &run.conversation_id, "claude", s)?;
+                rt.db.set_session(
+                    &a.id,
+                    &format!(
+                        "{}:thread:{}:managed-v2",
+                        run.conversation_id,
+                        run.thread_id.as_deref().unwrap_or("main")
+                    ),
+                    "claude",
+                    s,
+                )?;
             }
 
             match v["type"].as_str().unwrap_or("") {
@@ -385,7 +397,7 @@ return Err("Codex configuration could not disable inherited integrations".into()
 
  }
 
- let saved=rt.db.session(&a.id,&run.conversation_id,"codex");
+ let saved=rt.db.session(&a.id,&format!("{}:thread:{}:managed-v2", run.conversation_id, run.thread_id.as_deref().unwrap_or("main")),"codex");
 let mut params=json!({
 "cwd":cwd,"approvalPolicy":"on-request","sandbox":"read-only","baseInstructions":"Use OpenDots tools for all external actions. Native execution is disabled.","persistExtendedHistory":true}
 );
@@ -405,7 +417,7 @@ params["dynamicTools"]=json!(mcp::builtin_tools().into_iter().map(|t|json!({
 
  let response=p.request(3,method,params).await?;
 let thread=response["thread"]["id"].as_str().ok_or("Codex did not return a thread ID")?.to_string();
-rt.db.set_session(&a.id,&run.conversation_id,"codex",&thread)?;
+rt.db.set_session(&a.id,&format!("{}:thread:{}:managed-v2", run.conversation_id, run.thread_id.as_deref().unwrap_or("main")),"codex",&thread)?;
 
  p.send(json!({
 "id":4,"method":"turn/start","params":{
@@ -550,7 +562,7 @@ let init=p.request(1,"initialize",json!({
 }
 )).await?;
 
- let saved=rt.db.session(&a.id,&run.conversation_id,"cursor");
+ let saved=rt.db.session(&a.id,&format!("{}:thread:{}:managed-v2", run.conversation_id, run.thread_id.as_deref().unwrap_or("main")),"cursor");
 let mut params=json!({
 "cwd":cwd,"mcpServers":[{
 "type":"http","name":"opendots","url":url,"headers":[]}
@@ -566,7 +578,7 @@ else{
 ;
 let response=p.request(2,method,params.clone()).await?;
 let session=response["sessionId"].as_str().or(params["sessionId"].as_str()).ok_or("Cursor did not return a session ID")?.to_string();
-rt.db.set_session(&a.id,&run.conversation_id,"cursor",&session)?;
+rt.db.set_session(&a.id,&format!("{}:thread:{}:managed-v2", run.conversation_id, run.thread_id.as_deref().unwrap_or("main")),"cursor",&session)?;
 p.send(json!({
 "jsonrpc":"2.0","id":3,"method":"session/prompt","params":{
 "sessionId":session,"prompt":[{

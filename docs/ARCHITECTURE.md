@@ -8,25 +8,33 @@ React invokes typed Tauri commands. Rust owns persistence, validation, schedulin
 
 ## Storage
 
-SQLite lives in Tauri's platform application-data directory (`com.gaurav.opendots`), alongside application-controlled provider workspaces. WAL mode is enabled. The schema version is tracked in `migrations`.
+Embedded `polodb_core = 5.3.0` stores BSON documents in `opendots.polodb` under Tauri application data (`com.gaurav.opendots`). RocksDB is statically compiled into the Rust binary, not launched as a service. Each resource kind has a collection. Documents preserve stable IDs and include a format version, typed data and indexed lookup fields.
 
-- Typed agents, groups, memberships, memories, integrations, jobs, approvals, and occurrences use JSON records in `entities`, keyed by kind and UUID.
-- Executions, ordered events, conversation messages, and provider sessions use dedicated tables and indexes.
-- Session keys include agent, conversation, and provider. A group shares messages, not a provider session or private memory.
-- Handoff execution, visible message, and deduplication record are committed together.
-- MCP bearer tokens are stored in the OS credential store, not SQLite. Provider authentication stays with the provider CLI.
+Startup copies an existing SQLite database using `VACUUM INTO`, imports every entity, message, event, execution, legacy session and handoff into a staging store, verifies record round trips and historical execution references, writes an import manifest, and renames the verified directory into place. SQLite and its timestamped snapshot remain untouched. Failed stages remain available for diagnosis; retry starts a fresh stage from the preserved source. An activated store without an import manifest is an error, never an empty fallback. `rusqlite` exists only for legacy import and test fixtures.
 
-The user's workspace field is a reference for assigned tools. Provider processes run in application-controlled workspaces so OpenDots never overwrites user project settings. This is not a universal operating-system sandbox for third-party software.
+Message/dispatch/deduplication records, handoffs, schedule application, scheduled occurrence claims, and human questions/continuations use transactions. Message positions are monotonic counters, independent of timestamps. History returns 50 messages; activity returns 200 events with explicit cursors. PoloDB 5.3.0 has an indexed filter/sort regression: the adapter streams equality-filtered cursors and retains a bounded newest page in Rust. Payloads and retained page memory are bounded, but reading older pages still scans the conversation. Benchmark before promising large-history performance.
+
+Provider sessions use agent, conversation, thread, provider and managed-tool-version keys. Imported sessions remain historical and are never resumed. Credentials stay in the OS credential store. Document defaults and explicit format upgrades replace SQL schema migrations; compatibility changes still require upgrades.
+
+Settings chooses one working root. `workspace` mediates private `agents/<agent-id>/` directories with capability handles and no-follow path traversal. File tools reject absolute paths, traversal, symbolic links and hard-linked reads; writes replace an inode rather than truncate an existing linked file. Browser artifacts use `artifacts/<execution-id>`, uploads use `inputs`, and shared copies use `shared`. Agents cannot mutate those runtime-owned subdirectories through file tools. Browser/profile databases and provider configuration remain application runtime data.
+
+Existing browser output is copied and verified before a transaction switches the working-root and upload/grant references. Original files remain. Workspace relocation after initial selection is deliberately blocked until a dedicated move workflow exists. Missing roots block execution rather than silently selecting a replacement. Provider-native shell/filesystem capabilities are disabled; local stdio integration calls are blocked. Remote MCP services remain separately configured, approval-controlled services, not OS-sandboxed processes.
+
+## Chat routing
+
+`chat::post_chat` validates conversation members and commits a message plus one execution per unique selected agent. Reusing its request ID returns the original dispatch. Plain `@name` strings are inert. Replies inherit their thread and address an agent author by default. Explicit mentions override that default; unaddressed group posts stay informational. Direct chats implicitly address their agent.
+
+The UI has safe Markdown (no raw HTML or automatic remote images), mention chips/autocomplete, a fixed composer, optional thread/activity panels, reply counts and an inbox. `post_message` shares the existing handoff path for agent recipients. Mentioning `you` creates an unread notification; `request_answer` atomically records a waiting request and ends provider work. Replying creates a continuation, closes the waiting request and retains the job/task-chain association. Approval cards remain separate.
 
 ## Execution lifecycle
 
-A user message, scheduled occurrence, or structured handoff creates a queued execution. The dispatcher allows one active execution per agent and four across the app. A run streams events and finishes as completed, failed, or cancelled. Approvals temporarily move it to waiting_approval. On restart, formerly active runs become interrupted and pending approvals expire.
+A user message, scheduled occurrence, or structured handoff creates a queued execution. The dispatcher allows one active execution per agent and four across the app. A run streams events and finishes as completed, failed, or cancelled. Approvals temporarily move it to waiting_approval. On restart, formerly running/queued runs become interrupted; human requests remain waiting and pending approvals expire.
 
 Every conversation exposes its executions. Tool activity is what the provider or managed MCP bridge actually reports; hidden reasoning is not presented as observable work.
 
 ## Group collaboration
 
-The provider receives the selected agent's instructions, imported skill content, approved memories, and recent messages from the current conversation. Group context includes member IDs and roles. Private chats are excluded.
+The provider receives the selected agent's instructions, imported skill content, approved memories, and recent messages from the current thread. Group context includes member IDs and roles. Private chats are excluded.
 
 `send_to_agent(agent_id, message, request_id, artifacts?)` creates a separate recipient execution in the same task chain. Reusing request_id within the originating execution returns the existing handoff. Ordinary text mentions do not execute anything. The task-chain handoff limit counts branches as well as depth.
 
@@ -50,7 +58,7 @@ An active job chain prevents overlap. Single-instance handling prevents multiple
 
 ## Browser runtime
 
-`browser` owns the Rust CDP connection, supervised Chrome processes, profile leases, observation snapshots, managed files, and capture. Existing SQLite entity storage holds `browser_profile`, `browser_upload`, explicit `browser_share` grants and `browser_replay` requests. These additive entity kinds preserve existing records without rewriting their schema. Executions retain browser action start/finish and screenshot-reference events; large artifacts are under `browser-artifacts/<execution-id>`.
+`browser` owns the Rust CDP connection, supervised Chrome processes, profile leases, observation snapshots, managed files, and capture. Document collections hold `browser_profile`, `browser_upload`, explicit copied `browser_share_copy` references and `browser_replay` requests. These additive entity kinds preserve existing records without rewriting their schema. Executions retain browser action start/finish and screenshot-reference events; large artifacts are under the owning agent’s `artifacts/<execution-id>`.
 
 The execution-scoped tool bridge returns typed text/image content. Claude/Cursor receive MCP image content; Codex receives `inputImage` dynamic-tool items. No screenshot base64 is written to execution events. UI live frames are polled from bounded in-memory capture state and are shown only for the owning execution.
 

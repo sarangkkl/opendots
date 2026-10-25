@@ -1028,3 +1028,137 @@ pre {
   width: 100%;
   box-sizing: border-box;
 }
+
+/* Channel layout: the timeline owns scrolling; composer remains visible. */
+.conversation-heading {
+  margin-bottom: 16px;
+}
+.conversation-heading h1 {
+  font-size: 26px;
+}
+.conversation-heading p {
+  margin: 5px 0;
+}
+.member-strip {
+  margin-bottom: 16px;
+  gap: 8px;
+}
+.member-strip .avatar {
+  display: none;
+}
+.channel-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  height: calc(100vh - 300px);
+  min-height: 420px;
+}
+.channel-layout.with-panel {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 38%);
+}
+.channel-layout .chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.channel-layout .messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 20px;
+}
+.channel-layout .message {
+  padding: 12px 0;
+}
+.channel-layout .composer {
+  margin: 12px;
+  flex-shrink: 0;
+  position: relative;
+}
+.channel-layout .message-content {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.markdown p {
+  margin: 8px 0;
+}
+.markdown pre {
+  overflow: auto;
+  padding: 12px;
+  background: var(--background);
+  border-radius: 6px;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 22px;
+}
+.markdown blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+}
+.mention-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--accent);
+}
+.mention-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 8px;
+  z-index: 10;
+}
+.thread-panel {
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding-bottom: 12px;
+}
+.thread-messages {
+  overflow: auto;
+  padding: 12px;
+  flex: 1;
+}
+.thread-panel .message-content {
+  margin-left: 0;
+}
+.reply-context {
+  font-size: 13px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.channel-layout .activity-panel {
+  overflow: auto;
+}
+@media (max-width: 1000px) {
+  .channel-layout.with-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .thread-panel,
+  .channel-layout .activity-panel {
+    position: fixed;
+    right: 0;
+    top: 80px;
+    bottom: 0;
+    width: min(480px, 90vw);
+    background: var(--surface);
+    z-index: 20;
+  }
+}
+.thread-panel > .panel-heading {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.reply-preview {
+  max-height: 44px;
+  overflow: hidden;
+  color: var(--muted);
+}
+.reply-preview p {
+  margin: 4px 0;
+}

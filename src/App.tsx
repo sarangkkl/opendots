@@ -15,15 +15,15 @@ import {
   type Integration,
   type Job,
   type Memory,
-  type Message,
   type RunEvent,
   type Snapshot,
 } from "./types";
 import "./App.css";
+import { Chat, WorkingFolder } from "./Chat";
 import { readAppearance, saveAppearance, type Appearance } from "./theme";
 import { BrowserSettings, BrowserInspector, BrowserPolicies } from "./Browser";
 
-type Page = "Groups" | "Agents" | "Jobs" | "Settings";
+type Page = "Groups" | "Agents" | "Jobs" | "Settings" | "Mentions";
 type Editor =
   | { kind: "agent"; value: Agent }
   | { kind: "group"; value: Group }
@@ -98,13 +98,11 @@ export default function App() {
   const [data, setData] = useState<Snapshot>(empty);
   const [page, setPage] = useState<Page>("Groups");
   const [selected, setSelected] = useState("");
+  const [initialReply, setInitialReply] = useState<string>();
   const [editor, setEditor] = useState<Editor | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [draft, setDraft] = useState("");
-  const [recipient, setRecipient] = useState("");
   const [inspect, setInspect] = useState("");
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [checks, setChecks] = useState<Record<string, unknown>>({});
@@ -152,19 +150,6 @@ export default function App() {
       : "";
   useEffect(() => {
     let valid = true;
-    if (conversation && isTauri())
-      void invoke<Message[]>("messages", { conversationId: conversation })
-        .then((v) => {
-          if (valid) setMessages(v);
-        })
-        .catch((e) => setError(String(e)));
-    else setMessages([]);
-    return () => {
-      valid = false;
-    };
-  }, [conversation, data]);
-  useEffect(() => {
-    let valid = true;
     if (inspect && isTauri())
       void invoke<RunEvent[]>("execution_events", { executionId: inspect })
         .then((v) => {
@@ -176,10 +161,7 @@ export default function App() {
       valid = false;
     };
   }, [inspect, data]);
-  useEffect(() => {
-    setRecipient(group?.members[0] || agent?.id || "");
-    setDraft("");
-  }, [selected, page, group?.members.join(",")]);
+  useEffect(() => {}, [selected, page, group?.members.join(",")]);
   const act = async <T,>(
     command: string,
     args: Record<string, unknown> = {},
@@ -251,19 +233,24 @@ export default function App() {
         </button>
         <p className="eyebrow">YOUR WORKSPACE</p>
         <nav>
-          {(["Groups", "Agents", "Jobs", "Settings"] as Page[]).map((p, i) => (
-            <button
-              key={p}
-              className={page === p ? "nav-item selected" : "nav-item"}
-              onClick={() => show(p)}
-            >
-              <span className="nav-icon">{["◈", "◉", "◷", "⚙"][i]}</span>
-              {p}
-              {p === "Agents" && (
-                <span className="count">{data.agents.length}</span>
-              )}
-            </button>
-          ))}
+          {(["Groups", "Agents", "Jobs", "Settings", "Mentions"] as Page[]).map(
+            (p, i) => (
+              <button
+                key={p}
+                className={page === p ? "nav-item selected" : "nav-item"}
+                onClick={() => show(p)}
+              >
+                <span className="nav-icon">{["◈", "◉", "◷", "⚙", "@"][i]}</span>
+                {p}
+                {p === "Mentions"
+                  ? ` (${(data.notifications || []).filter((n) => !n.read).length})`
+                  : ""}
+                {p === "Agents" && (
+                  <span className="count">{data.agents.length}</span>
+                )}
+              </button>
+            ),
+          )}
         </nav>
         <div className="sidebar-groups">
           <p className="eyebrow">GROUPS</p>
@@ -337,7 +324,9 @@ export default function App() {
                       ? "Meet your agents"
                       : page === "Jobs"
                         ? "Work on a schedule"
-                        : "Workspace settings"}
+                        : page === "Mentions"
+                          ? "Mentions & requests"
+                          : "Workspace settings"}
                 </h1>
                 <p className="muted">
                   {page === "Groups"
@@ -346,10 +335,12 @@ export default function App() {
                       ? "Teach them your process, connect their tools, and follow their work."
                       : page === "Jobs"
                         ? "Assign a task now or schedule it for later."
-                        : "Connect your installed providers and the tools your agents use."}
+                        : page === "Mentions"
+                          ? "Questions and updates addressed to you. Replies continue the original thread."
+                          : "Connect your installed providers and the tools your agents use."}
                 </p>
               </div>
-              {page !== "Settings" && (
+              {page !== "Settings" && page !== "Mentions" && (
                 <button
                   className="primary"
                   onClick={() =>
@@ -521,128 +512,22 @@ export default function App() {
                   </span>
                 </div>
               )}
-              <div className="workspace-columns">
-                <section className="chat-panel">
-                  <div className="panel-heading">
-                    <h3>{group ? "Group conversation" : "Conversation"}</h3>
-                    <span className="muted">You can join at any time</span>
-                  </div>
-                  <div className="messages">
-                    {!messages.length && (
-                      <div className="chat-empty">
-                        <span>✧</span>
-                        <h2>What are we working on?</h2>
-                        <p>
-                          {group
-                            ? "Give a task to a team member to start the conversation."
-                            : "Describe the agent’s work, share instructions, or ask a question."}
-                        </p>
-                      </div>
-                    )}
-                    {messages.map((m) => (
-                      <article className={`message ${m.role}`} key={m.id}>
-                        <div className="message-meta">
-                          <span className="avatar">{name(m.agent_id)[0]}</span>
-                          <strong>{name(m.agent_id)}</strong>
-                          {m.role === "handoff" && <Badge status="handoff" />}
-                          <time>{date(m.created_at)}</time>
-                          {m.execution_id && (
-                            <button
-                              className="text-button"
-                              onClick={() => setInspect(m.execution_id!)}
-                            >
-                              View execution ↗
-                            </button>
-                          )}
-                        </div>
-                        <div className="message-content">{m.content}</div>
-                      </article>
-                    ))}
-                  </div>
-                  <form
-                    className="composer"
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      if (!recipient) return;
-                      const result = await act<{ id: string }>("send_message", {
-                        input: {
-                          agent_id: recipient,
-                          group_id: group?.id || null,
-                          job_id: null,
-                          prompt: draft,
-                        },
-                      });
-                      if (result) {
-                        setDraft("");
-                        setInspect(result.id);
-                      }
-                    }}
-                  >
-                    <textarea
-                      aria-label="Message"
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
-                      placeholder="Describe a task, teach a process, or join the conversation…"
-                      rows={3}
-                    />
-                    <div className="composer-bottom">
-                      {group ? (
-                        <select
-                          aria-label="Recipient"
-                          value={recipient}
-                          onChange={(e) => setRecipient(e.target.value)}
-                        >
-                          <option value="" disabled>
-                            Choose agent
-                          </option>
-                          {group.members.map((id) => (
-                            <option key={id} value={id}>
-                              @{name(id)}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <span className="muted">
-                          {agent?.provider} · private conversation
-                        </span>
-                      )}
-                      <button
-                        className="primary"
-                        disabled={
-                          busy || !draft.trim() || !recipient || group?.paused
-                        }
-                      >
-                        Send ↗
-                      </button>
-                    </div>
-                  </form>
-                </section>
-                <aside className="activity-panel">
-                  <div className="panel-heading">
-                    <h3>Executions</h3>
-                    <span>{relevantRuns.length}</span>
-                  </div>
-                  {relevantRuns.length === 0 && (
-                    <p className="muted padded">
-                      Each agent’s work will appear here.
-                    </p>
-                  )}
-                  {relevantRuns.map((r) => (
-                    <button
-                      className={`run-card ${inspect === r.id ? "chosen" : ""}`}
-                      key={r.id}
-                      onClick={() => setInspect(r.id)}
-                    >
-                      <div>
-                        <strong>{name(r.agent_id)}</strong>
-                        <Badge status={r.status} />
-                      </div>
-                      <p>{r.prompt}</p>
-                      <small>{date(r.created_at)}</small>
-                    </button>
-                  ))}
-                </aside>
-              </div>
+              <Chat
+                key={conversation}
+                conversation={conversation}
+                agents={data.agents.filter((a) =>
+                  group ? group.members.includes(a.id) : a.id === agent?.id,
+                )}
+                executions={relevantRuns}
+                version={data}
+                inspect={setInspect}
+                error={setError}
+                paused={group?.paused}
+                initialReply={initialReply}
+                onPosted={() => {
+                  void refresh();
+                }}
+              />
               {agent && (
                 <section className="memory-section">
                   <div className="panel-heading">
@@ -824,6 +709,31 @@ export default function App() {
                 ))}
             </>
           )}
+          {page === "Mentions" && (
+            <section>
+              <h2>Inbox</h2>
+              {!(data.notifications || []).length && <p>No requests yet.</p>}
+              {(data.notifications || []).map((n) => (
+                <button
+                  className="run-card"
+                  key={n.id}
+                  onClick={() => {
+                    void act("read_notification", { id: n.id });
+                    setInitialReply(n.message_id);
+                    const [kind, id] = n.conversation_id.split(":");
+                    show(kind === "group" ? "Groups" : "Agents", id);
+                  }}
+                >
+                  <strong>
+                    {n.status === "waiting" ? "Waiting for you" : "Mention"}
+                    {!n.read ? " · Unread" : ""}
+                  </strong>
+                  <p>{n.content}</p>
+                  <small>Open thread and reply</small>
+                </button>
+              ))}
+            </section>
+          )}
           {page === "Settings" && (
             <>
               <section className="settings-section">
@@ -847,6 +757,7 @@ export default function App() {
                   </select>
                 </Field>
               </section>
+              <WorkingFolder />
               <BrowserSettings agents={data.agents} />
               <section className="settings-section">
                 <h2>Execution providers</h2>
@@ -922,6 +833,12 @@ export default function App() {
                       <div>
                         <h3>{i.name}</h3>
                         <small>{i.url || i.command}</small>
+                        {i.command && (
+                          <p className="muted">
+                            Unavailable to agents: local stdio commands cannot
+                            enforce private-folder access.
+                          </p>
+                        )}
                       </div>
                       <div className="actions">
                         <button onClick={() => testIntegration(i.id)}>
@@ -1008,6 +925,23 @@ export default function App() {
           </div>
           <BrowserInspector executionId={inspect} onReplay={setInspect} />
           <h3>Activity timeline</h3>
+          {events.length >= 200 && (
+            <button
+              onClick={async () => {
+                try {
+                  const older = await invoke<RunEvent[]>("execution_events", {
+                    executionId: inspect,
+                    before: events[0]?.seq,
+                  });
+                  setEvents((current) => [...older, ...current]);
+                } catch (e) {
+                  setError(String(e));
+                }
+              }}
+            >
+              Load earlier activity
+            </button>
+          )}
           {events
             .filter((e) => e.kind !== "text")
             .map((e) => (
@@ -1104,15 +1038,10 @@ export default function App() {
                       />
                     </Field>
                   </div>
-                  <Field
-                    label="Workspace reference"
-                    hint="Agents access this workspace through their assigned tools."
-                  >
-                    <input
-                      value={editor.value.workspace}
-                      onChange={(e) => update({ workspace: e.target.value })}
-                    />
-                  </Field>
+                  <p className="muted">
+                    Files stay in this agent’s private folder under the working
+                    root selected in Settings.
+                  </p>
                   <Field label="Import a Markdown skill">
                     <input
                       type="file"
@@ -1390,7 +1319,8 @@ export default function App() {
                   <div className="form-grid">
                     <Field label="Local date and time">
                       <input
-                        required
+                        required={editor.value.recurrence !== "immediate"}
+                        disabled={editor.value.recurrence === "immediate"}
                         type="datetime-local"
                         value={editor.value.local_time}
                         onChange={(e) => update({ local_time: e.target.value })}
@@ -1409,6 +1339,9 @@ export default function App() {
                       value={editor.value.recurrence}
                       onChange={(e) => update({ recurrence: e.target.value })}
                     >
+                      <option value="immediate">
+                        Immediately after approval
+                      </option>
                       <option value="once">Once</option>
                       <option value="daily">Daily</option>
                       <option value="weekly">Weekly</option>

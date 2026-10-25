@@ -73,6 +73,21 @@ impl Runtime {
         Ok(())
     }
     pub fn enqueue(&self, input: SendInput, parent: Option<&Execution>) -> Result<Execution> {
+        let (run, message) = self.prepare_run(input, parent)?;
+        self.db.insert_handoff(
+            &run,
+            &message,
+            &format!("enqueue:{}", run.id),
+            &json!({"execution_id":run.id}),
+        )?;
+        self.event(&run.id, "status", json!({"status":"queued"}));
+        Ok(run)
+    }
+    fn prepare_run(
+        &self,
+        input: SendInput,
+        parent: Option<&Execution>,
+    ) -> Result<(Execution, Message)> {
         if input.prompt.trim().is_empty() {
             return Err("Message cannot be empty".into());
         }
@@ -87,12 +102,22 @@ impl Runtime {
             }
         }
         let run_id = id();
+        let message_id = id();
+        let existing_thread = input
+            .thread_id
+            .clone()
+            .or_else(|| parent.and_then(|p| p.thread_id.clone()));
         let conversation = input
             .group_id
             .as_ref()
             .map(|g| format!("group:{g}"))
             .unwrap_or_else(|| format!("agent:{}", input.agent_id));
         let run = Execution {
+            thread_id: Some(
+                existing_thread
+                    .clone()
+                    .unwrap_or_else(|| message_id.clone()),
+            ),
             id: run_id.clone(),
             agent_id: input.agent_id,
             conversation_id: conversation,
@@ -108,20 +133,27 @@ impl Runtime {
             updated_at: now(),
             error: None,
         };
-        self.db.insert_run(&run)?;
-        self.db.message(&Message {
-            id: id(),
+        let message = Message {
+            reply_count: 0,
+            position: 0,
+            thread_id: existing_thread,
+            reply_to: None,
+            mentions: vec![],
+            attachments: vec![],
+            id: message_id,
             conversation_id: run.conversation_id.clone(),
             agent_id: parent.map(|p| p.agent_id.clone()),
             execution_id: Some(run.id.clone()),
             role: if parent.is_some() { "handoff" } else { "user" }.into(),
             content: run.prompt.clone(),
             created_at: now(),
-        })?;
-        self.event(&run.id, "status", json!({"status":"queued"}));
-        Ok(run)
+        };
+        Ok((run, message))
     }
     pub async fn approve(&self, run: &str, kind: &str, payload: Value) -> Result<()> {
+        self.approve_record(run, kind, payload).await.map(|_| ())
+    }
+    pub async fn approve_record(&self, run: &str, kind: &str, payload: Value) -> Result<String> {
         if self.cancelled(run) {
             return Err("Execution cancelled".into());
         }
@@ -143,7 +175,7 @@ impl Runtime {
             match current.status.as_str() {
                 "approved" => {
                     self.status(run, "running", None);
-                    return Ok(());
+                    return Ok(a.id.clone());
                 }
                 "rejected" | "expired" => {
                     self.status(run, "running", None);
@@ -209,11 +241,16 @@ impl Runtime {
                 json!(members)
             ));
         }
-        let messages = self.db.messages(&run.conversation_id)?;
+        let messages = self
+            .db
+            .history(&run.conversation_id, None, run.thread_id.as_deref())?;
         let recent: Vec<_> = messages
             .iter()
+            .filter(|m| m.thread_id == run.thread_id || run.thread_id.as_ref() == Some(&m.id))
             .rev()
             .take(30)
+            .collect::<Vec<_>>()
+            .into_iter()
             .rev()
             .map(|m| json!({"role":m.role,"agent_id":m.agent_id,"content":m.content}))
             .collect();
@@ -253,6 +290,10 @@ impl Runtime {
                 {
                     continue;
                 }
+                if let Err(error) = self.work_path(&run.agent_id) {
+                    self.status(&run.id, "blocked", Some(&error));
+                    continue;
+                }
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.controls.lock().unwrap().insert(run.id.clone(), cancel);
                 running.insert(run.id.clone());
@@ -275,13 +316,25 @@ impl Runtime {
                     };
                     rt.browser_release(&run.id).await;
                     rt.tokens.lock().unwrap().remove(&token);
-                    if rt.cancelled(&run.id) {
+                    if rt
+                        .db
+                        .run(&run.id)
+                        .is_ok_and(|r| matches!(r.status.as_str(), "waiting_user" | "continued"))
+                    {
+                        rt.notify();
+                    } else if rt.cancelled(&run.id) {
                         rt.status(&run.id, "cancelled", None)
                     } else {
                         match result {
                             Ok(text) => {
                                 if !text.is_empty() {
                                     let _ = rt.db.message(&Message {
+                                        reply_count: 0,
+                                        position: 0,
+                                        thread_id: run.thread_id.clone(),
+                                        reply_to: None,
+                                        mentions: vec![],
+                                        attachments: vec![],
                                         id: id(),
                                         conversation_id: run.conversation_id.clone(),
                                         agent_id: Some(run.agent_id.clone()),
@@ -333,32 +386,38 @@ impl Runtime {
             };
             let occurrence = format!("{}:{}", job.id, at.timestamp());
             if self.db.get::<Value>("occurrence", &occurrence).is_err() {
-                let mut record = json!({"id":occurrence,"job_id":job.id,"at":at.to_rfc3339(),"status":if outcome=="dispatched"{"dispatching"}else{outcome}});
-                self.db.put("occurrence", &occurrence, &record)?;
-                if outcome == "dispatched" {
-                    match self.enqueue(
-                        SendInput {
-                            agent_id: job.agent_id.clone(),
-                            group_id: job.group_id.clone(),
-                            prompt: job.prompt.clone(),
-                            job_id: Some(job.id.clone()),
-                        },
-                        None,
-                    ) {
-                        Ok(run) => {
-                            record["status"] = json!("dispatched");
-                            record["execution_id"] = json!(run.id);
+                let mut record =
+                    json!({"id":occurrence,"job_id":job.id,"at":at.to_rfc3339(),"status":outcome});
+                let prepared = if outcome == "dispatched" {
+                    match self.work_path(&job.agent_id).and_then(|_| {
+                        self.prepare_run(
+                            SendInput {
+                                thread_id: None,
+                                agent_id: job.agent_id.clone(),
+                                group_id: job.group_id.clone(),
+                                prompt: job.prompt.clone(),
+                                job_id: Some(job.id.clone()),
+                            },
+                            None,
+                        )
+                    }) {
+                        Ok(pair) => {
+                            record["execution_id"] = json!(pair.0.id);
+                            Some(pair)
                         }
                         Err(error) => {
-                            record["status"] = json!("failed");
+                            record["status"] = json!("blocked");
                             record["error"] = json!(error);
+                            None
                         }
                     }
-                    self.db.put("occurrence", &occurrence, &record)?;
-                }
+                } else {
+                    None
+                };
+                job.next_at = schedule::advance(&job, now)?;
+                self.db
+                    .scheduled_occurrence(&job, &occurrence, &record, prepared.as_ref())?;
             }
-            job.next_at = schedule::advance(&job, now)?;
-            self.db.put("job", &job.id, &job)?;
             self.notify();
         }
         Ok(())

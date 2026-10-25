@@ -95,3 +95,9 @@ Output: `src-tauri/target/release/bundle/appimage/` and `bundle/deb/`. Credentia
 Commit both `package-lock.json` and `src-tauri/Cargo.lock`. Install scripts use `npm ci` and `tauri build -- --locked`; they do not upgrade dependencies. CI checks formatting, Rust lint/tests, frontend compilation, UI tests on Linux, and builds native artifacts on four runners.
 
 A configured CI job is not evidence that it ran. See [validation status](VALIDATION.md) for what has actually been exercised. Publishing, signing, notarization, auto-update hosting, and a public clone URL remain release-owner tasks.
+
+## Document database build requirements
+
+PoloDB is pinned to 5.3.0 and statically builds its RocksDB C++ library. The existing native toolchain must include a C++17 compiler and libclang: Xcode tools plus LLVM on macOS, `build-essential clang libclang-dev` on Ubuntu/Debian, and MSVC x64 plus LLVM on Windows. The first native build is substantially slower and larger than the previous SQLite build. No database server, executable sidecar or runtime Node/Python service is required.
+
+After upgrading, startup preserves and imports legacy SQLite data. Keep the original SQLite file, timestamped snapshot and import manifest until the imported installation has been reviewed. Do not open an older binary against the new document directory; it will only know about the preserved SQLite snapshot and cannot see new writes. Choose a working folder in Settings to copy legacy browser media before running agents. Do not delete original media until conversion is verified.

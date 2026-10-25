@@ -4,7 +4,7 @@ A desktop workspace for specialized AI agents that learn your process and work t
 
 Create agents backed by your installed Claude Code, Codex, or Cursor CLI. Give them instructions, Markdown skills, and MCP integrations. Review their proposed memories, follow individual executions, and control when they hand work to each other or use tools.
 
-The application backend is Rust inside Tauri 2. React and TypeScript render the UI. There is no bundled sidecar or Node/Python backend. Installed provider CLIs and external MCP servers remain separate programs.
+The application backend is Rust inside Tauri 2. React and TypeScript render the UI. There is no bundled sidecar or Node/Python backend. Installed provider CLIs and remote MCP services remain separately configured capabilities. Agent calls to arbitrary local stdio MCP commands are blocked under managed file confinement.
 
 ## Start developing
 
@@ -74,3 +74,5 @@ The Rust tests use local fixture MCP servers. Live provider tests are opt-in and
 [GNU Affero General Public License v3.0 only](LICENSE), SPDX `AGPL-3.0-only`. External providers and dependencies retain their own licenses and terms.
 
 Built-in browser setup, saved logins, approvals, capture and replay: [Browser guide](docs/BROWSER.md).
+
+Chats support structured mentions, thread replies, safe Markdown and a Mentions & requests inbox. Agents can propose approved schedules and work in private folders selected through Settings. State is stored in embedded PoloDB; existing SQLite installations import through a verified, non-destructive snapshot transition. See [architecture](docs/ARCHITECTURE.md) and [validation](docs/VALIDATION.md) for boundaries and tested combinations.

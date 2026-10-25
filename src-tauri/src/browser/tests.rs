@@ -38,6 +38,7 @@ fn setup(rt: &Runtime, name: &str) -> (Agent, Profile, Execution) {
     let run = rt
         .enqueue(
             SendInput {
+                thread_id: None,
                 agent_id: a.id.clone(),
                 group_id: None,
                 job_id: None,
@@ -186,7 +187,7 @@ async fn browser_fixture_approvals_profiles_recording_replay() {
     assert!(task.await.unwrap().unwrap_err().contains("changed"));
     sleep(Duration::from_millis(300)).await;
     rt.browser_release(&run.id).await;
-    let videos: Vec<_> = std::fs::read_dir(rt.browser_dir(&run.id))
+    let videos: Vec<_> = std::fs::read_dir(rt.browser_dir(&run.id).unwrap())
         .unwrap()
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|s| s == "webm"))
@@ -243,6 +244,7 @@ async fn browser_fixture_approvals_profiles_recording_replay() {
     let replay = rt
         .enqueue(
             SendInput {
+                thread_id: None,
                 agent_id: a.id.clone(),
                 group_id: None,
                 job_id: None,
@@ -283,7 +285,10 @@ async fn browser_fixture_approvals_profiles_recording_replay() {
     assert_eq!(rt.browser_profile(&a.id).unwrap().id, profile.id);
     rt.browser_shutdown().await;
     server.abort();
-    eprintln!("Browser evidence: {}", rt.browser_dir(&run.id).display());
+    eprintln!(
+        "Browser evidence: {}",
+        rt.browser_dir(&run.id).unwrap().display()
+    );
 }
 
 #[test]
@@ -291,14 +296,20 @@ fn browser_artifacts_require_explicit_agent_sharing() {
     let rt = runtime();
     let (a, _, run) = setup(&rt, "Creator");
     let (b, _, _) = setup(&rt, "Publisher");
-    let dir = rt.browser_dir(&run.id);
+    let dir = rt.browser_dir(&run.id).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("media.png"), b"fixture").unwrap();
     let reference = format!("browser:{}/media.png", run.id);
     assert!(rt.browser_file(&a.id, &reference).is_ok());
     assert!(rt.browser_file(&b.id, &reference).is_err());
     rt.db
-        .put("browser_share", &format!("{}:{reference}", b.id), &true)
+        .put(
+            "browser_share_copy",
+            &format!("{}:{reference}", b.id),
+            &"shared/media.png",
+        )
+        .unwrap();
+    rt.write_work(&b.id, "shared/media.png", b"fixture")
         .unwrap();
     assert!(rt.browser_file(&b.id, &reference).is_ok());
     assert!(
@@ -412,7 +423,7 @@ async fn browser_fixture_files_tabs_takeover_and_cancel() {
     )
     .await
     .unwrap();
-    let file = rt.root.join("upload.txt");
+    let file = rt.work_path(&a.id).unwrap().join("upload.txt");
     std::fs::write(&file, "fixture upload").unwrap();
     let artifact = id();
     rt.db
@@ -512,7 +523,7 @@ async fn browser_fixture_files_tabs_takeover_and_cancel() {
     let state = observe(&rt, &run.id).await;
     rt.browser_tool(&run.id,"browser_action",json!({"action":"download","snapshot":state["snapshot"],"url":format!("http://{address}/file")})).await.unwrap();
     sleep(Duration::from_millis(500)).await;
-    let downloaded: Vec<_> = std::fs::read_dir(rt.browser_dir(&run.id).join("downloads"))
+    let downloaded: Vec<_> = std::fs::read_dir(rt.browser_dir(&run.id).unwrap().join("downloads"))
         .unwrap()
         .flatten()
         .collect();

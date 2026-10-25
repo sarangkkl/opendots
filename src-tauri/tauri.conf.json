@@ -34,7 +34,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../docs/BROWSER-CODEC-NOTICES.txt": "BROWSER-CODEC-NOTICES.txt"
+      "../docs/BROWSER-CODEC-NOTICES.txt": "BROWSER-CODEC-NOTICES.txt",
+      "../docs/DATABASE-NOTICES.txt": "DATABASE-NOTICES.txt"
     }
   }
 }

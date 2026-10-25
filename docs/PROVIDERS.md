@@ -77,3 +77,13 @@ Set `OPENDOTS_TEST_EXECUTABLE` to an explicit provider path if needed. Test sess
 ## Built-in browser tools
 
 Browser tools are supplied by OpenDots' Rust bridge, not a provider-native browser plugin. Assign a saved profile in Settings. `browser_observe` returns native image content as well as text. Codex's installed app-server schema exposes `inputImage`/`imageUrl`; Claude and Cursor use MCP `image` content. A configured provider/model still needs image understanding for screenshot-based reasoning. DOM observations remain text. Refer to [browser setup](BROWSER.md) and [verification status](VALIDATION.md).
+
+## Managed workspace and collaboration tools
+
+Choose a working root in Settings before running a provider. Each agent uses its private folder through the Rust `files` tool (`list`, `read`, `write`, `mkdir`, `move`, `delete`, `share`). Modifying actions default to approval. The old free-form workspace reference no longer grants access. Local stdio integrations can still be inspected in Settings, but agent execution rejects them because they could bypass file confinement. Existing remote MCP calls retain their approval policies; those services are not an OS filesystem sandbox.
+
+`post_message` takes structured member IDs and a stable request ID; `you` addresses the user. `request_answer: true` ends the current provider execution as waiting-for-you. A reply starts a continuation in the same thread. `send_to_agent` remains compatible and inherits the thread. File sharing requires approval and copies browser artifacts before recipient dispatch.
+
+`jobs` lists the agent's jobs and proposes create/edit/pause/delete. Provide a stable request ID; changes require explicit approval. Use IANA timezones and once/daily/weekly recurrence, or `immediate`. The app must remain running in its tray. Unavailable work folders produce blocked occurrences.
+
+Sessions created before managed-tool version 2 are not resumed. Configure provider-native plugins only outside these managed sessions. Installed provider login files and runtime configuration remain outside the selected task-file root.

@@ -1,4 +1,5 @@
 mod browser;
+mod chat;
 mod commands;
 mod db;
 mod mcp;
@@ -7,6 +8,7 @@ mod process;
 mod providers;
 mod runtime;
 mod schedule;
+mod workspace;
 use runtime::Runtime;
 use std::{
     collections::HashMap,
@@ -130,6 +132,12 @@ pub fn run() {
             browser::commands::add_browser_upload,
             browser::commands::replay_browser,
             commands::snapshot,
+            chat::post_chat,
+            chat::history,
+            chat::chat_message,
+            chat::read_notification,
+            workspace::working_folder,
+            workspace::set_working_folder,
             commands::save_entity,
             commands::delete_entity,
             commands::messages,

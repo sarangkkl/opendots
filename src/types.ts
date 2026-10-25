@@ -69,6 +69,12 @@ export interface Approval {
   created_at: string;
 }
 export interface Message {
+  position: number;
+  reply_count?: number;
+  thread_id?: string | null;
+  reply_to?: string | null;
+  mentions?: string[];
+  attachments?: string[];
   id: string;
   conversation_id: string;
   agent_id: string | null;
@@ -85,6 +91,14 @@ export interface RunEvent {
   created_at: string;
 }
 export interface Snapshot {
+  notifications?: {
+    id: string;
+    message_id: string;
+    conversation_id: string;
+    content: string;
+    read: boolean;
+    status: string;
+  }[];
   agents: Agent[];
   groups: Group[];
   integrations: Integration[];

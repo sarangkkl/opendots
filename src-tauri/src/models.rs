@@ -119,6 +119,8 @@ impl Default for Job {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Execution {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub id: String,
     pub agent_id: String,
     pub conversation_id: String,
@@ -142,6 +144,18 @@ pub struct Event {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    #[serde(default)]
+    pub reply_count: u64,
+    #[serde(default)]
+    pub position: i64,
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub attachments: Vec<String>,
     pub id: String,
     pub conversation_id: String,
     pub agent_id: Option<String>,
@@ -168,6 +182,8 @@ pub struct Approval {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendInput {
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub agent_id: String,
     pub group_id: Option<String>,
     pub prompt: String,

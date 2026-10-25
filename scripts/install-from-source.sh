@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mode="${1:-install}"
 case "$mode" in install|--build-only|--check) ;; *) echo 'Usage: install-from-source.sh [--check|--build-only]' >&2; exit 2;; esac
-for tool in node npm cargo rustc pkg-config; do
+for tool in node npm cargo rustc pkg-config c++; do
   command -v "$tool" >/dev/null 2>&1 || { echo "Missing $tool. See docs/BUILDING.md." >&2; exit 1; }
 done
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);if(a<22||(a===22&&b<12)){console.error("Node 22.12+ required");process.exit(1)}'
