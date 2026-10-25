@@ -12,13 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "opendots",
-        "width": 800,
-        "height": 600
+        "title": "OpenDots",
+        "width": 1280,
+        "height": 850,
+        "minWidth": 760,
+        "minHeight": 580
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; img-src 'self' blob: asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'"
     }
   },
   "bundle": {
@@ -30,6 +32,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../docs/BROWSER-CODEC-NOTICES.txt": "BROWSER-CODEC-NOTICES.txt"
+    }
   }
 }
